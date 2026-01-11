@@ -1,0 +1,8 @@
+streamlit
+pandas
+altair
+qrcode
+gspread
+oauth2client
+Pillow
+numpy
