@@ -471,11 +471,12 @@ else:
             
             st.divider()
             st.subheader("📇 Asthma Card")
-            base_url = "http://localhost:8501"
+            base_url = "https://asthma-care.streamlit.app"
             link = f"{base_url}/?hn={selected_hn}"
             c_q, c_t = st.columns([1,2])
             c_q.image(generate_qr(link), width=150)
             c_t.markdown(f"**{pt_data['first_name']} {pt_data['last_name']}**")
             c_t.markdown(f"**HN:** {selected_hn}")
             c_t.markdown(f"Predicted PEFR: {int(predicted_pefr)}")
+
             c_t.code(link)
