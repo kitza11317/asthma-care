@@ -149,7 +149,16 @@ def render_dashboard_charts(patients_df, visits_df):
         # เอา Visit ล่าสุดของแต่ละ HN
         latest_visits = visits_df.sort_values('date').groupby('hn').tail(1)
         
-        status_counts = latest_visits['control'].value_counts().reset_index()
+        # [แก้ไข] เปลี่ยนไปใช้ control_level ตามที่คุณแจ้ง
+        target_col = 'control_level'
+        if target_col not in latest_visits.columns:
+            # Fallback เผื่อหาไม่เจอ ลองหา control ธรรมดา
+            if 'control' in latest_visits.columns: target_col = 'control'
+            else: 
+                st.error(f"ไม่พบคอลัมน์ {target_col} ใน Google Sheet")
+                return None, None
+
+        status_counts = latest_visits[target_col].value_counts().reset_index()
         status_counts.columns = ['status', 'count']
         
         # Color Map
@@ -259,7 +268,6 @@ else:
     patients_db = load_data_staff("patients")
     visits_db = load_data_staff("visits")
     
-    # เมนูหลัก (เอา Action Plan ออกแล้ว)
     mode = st.sidebar.radio("เมนูหลัก", ["📊 Dashboard ภาพรวม", "🔍 ค้นหา/บันทึกอาการ", "➕ ลงทะเบียนผู้ป่วยใหม่"])
 
     if mode == "📊 Dashboard ภาพรวม":
@@ -275,8 +283,18 @@ else:
             visits_clean = visits_db.dropna(subset=['date'])
             this_month_visits = visits_clean[visits_clean['date'].dt.strftime('%Y-%m') == this_month].shape[0]
             
+            # Find Uncontrolled
             last_visits = visits_clean.sort_values('date').groupby('hn').tail(1)
-            uncontrolled_count = last_visits[last_visits['control'] == 'Uncontrolled'].shape[0]
+            
+            # [แก้ไข] เปลี่ยนไปใช้ control_level
+            target_col = 'control_level'
+            if target_col not in last_visits.columns: 
+                 if 'control' in last_visits.columns: target_col = 'control'
+            
+            if target_col in last_visits.columns:
+                uncontrolled_count = last_visits[last_visits[target_col] == 'Uncontrolled'].shape[0]
+            else:
+                uncontrolled_count = 0
         else:
             this_month_visits = 0
             uncontrolled_count = 0
