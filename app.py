@@ -8,110 +8,53 @@ from io import BytesIO
 from PIL import Image
 from datetime import datetime, timedelta
 import numpy as np
-from fpdf import FPDF
-import os
-import warnings
-import re
-
-# ปิด Warning
-warnings.filterwarnings("ignore")
 
 # ==========================================
 # 1. SETUP & CONFIGURATION
 # ==========================================
 st.set_page_config(page_title="Asthma Care Connect", layout="centered", page_icon="🫁")
 
-# ID ของ Google Sheet (ตรวจสอบให้แน่ใจว่าถูกต้อง)
+# --- การตั้งค่า Google Sheets ---
 SHEET_ID = "1LF9Yi6CXHaiITVCqj9jj1agEdEE9S-37FwnaxNIlAaE"
 SHEET_NAME = "asthma_db"
 
-PATIENTS_GID = "0"              
-VISITS_GID = "1491996218"       
-ACTION_PLAN_GID = "203870068"
+# GID สำหรับโหลดเร็ว (Patient View)
+PATIENTS_GID = "0"
+VISITS_GID = "1491996218"
 
-# Password (ควรย้ายไป st.secrets ในอนาคต)
+# 🔐 รหัสผ่านเจ้าหน้าที่
 ADMIN_PASSWORD = "1234"
-FONT_PATH = "Sarabun.ttf" 
 
 # ==========================================
-# 2. PDF GENERATOR
+# 2. CALCULATION FORMULAS
 # ==========================================
 
-def clean_text(text):
-    if pd.isna(text) or text is None: return ""
-    text = str(text).strip()
-    replacements = {'\r\n': '\n', '”': '"', '“': '"', '’': "'", '‘': "'", '…': '...', '–': '-', '—': '-'}
-    for k, v in replacements.items():
-        text = text.replace(k, v)
-    return re.sub(r'[^\u0E00-\u0E7F\x20-\x7E\n]', '', text)
-
-class PDFActionPlan(FPDF):
-    def header(self):
-        if not os.path.exists(FONT_PATH):
-             self.set_font('Helvetica', '', 12)
-             self.cell(0, 10, f"Error: Font file {FONT_PATH} not found.", 0, 1)
-             return
-        self.add_font('Thai', '', FONT_PATH)
-        self.set_font('Thai', '', 20)
-        self.cell(0, 10, 'แผนปฏิบัติการดูแลรักษาโรคหืด (Asthma Action Plan)', align='C', new_x="LMARGIN", new_y="NEXT")
-        self.ln(5)
-
-    def chapter_body(self, patient_info, plan_data):
-        self.set_font('Thai', '', 14)
-        self.cell(0, 8, f"ชื่อผู้ป่วย: {clean_text(patient_info['name'])}  (HN: {clean_text(patient_info['hn'])})", new_x="LMARGIN", new_y="NEXT")
-        self.cell(0, 8, f"วันที่: {clean_text(plan_data['updated_at'])}   แพทย์/เภสัชกร: {clean_text(plan_data['provider'])}", new_x="LMARGIN", new_y="NEXT")
-        self.cell(0, 8, f"เบอร์โทรฉุกเฉิน: {clean_text(plan_data['emergency_contact'])}", new_x="LMARGIN", new_y="NEXT")
-        self.ln(5)
-
-        def draw_section(title, color_fill, color_text, sym_text, med_text, act_text=None):
-            self.set_fill_color(*color_fill)
-            if self.get_y() > 230: self.add_page()
-            start_y = self.get_y()
-            box_height = 65
-            self.rect(self.get_x(), start_y, 190, box_height, 'F')
-            self.set_text_color(*color_text)
-            self.set_font('Thai', '', 16)
-            self.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
-            self.set_text_color(0, 0, 0)
-            self.set_font('Thai', '', 14)
-            self.set_xy(self.get_x() + 5, self.get_y())
-            self.multi_cell(180, 7, f"{clean_text(sym_text)}")
-            self.set_xy(self.get_x() + 5, self.get_y() + 2)
-            self.multi_cell(180, 7, f"{clean_text(med_text)}")
-            if act_text:
-                self.set_xy(self.get_x() + 5, self.get_y() + 2)
-                self.multi_cell(180, 7, f"{clean_text(act_text)}")
-            self.set_xy(self.get_x(), start_y + box_height + 5)
-
-        draw_section("🟢 สบายดี / ควบคุมอาการได้", (209, 231, 221), (25, 135, 84), plan_data['green_sym'], plan_data['green_med'])
-        draw_section("🟡 เริ่มมีอาการหอบ", (255, 243, 205), (255, 150, 0), plan_data['yellow_sym'], plan_data['yellow_med'])
-        draw_section("🔴 ฉุกเฉิน / อันตราย", (248, 215, 218), (220, 53, 69), plan_data['red_sym'], plan_data['red_act'])
-
-def create_pdf(patient_info, plan_data):
-    pdf = PDFActionPlan()
-    pdf.add_page()
-    pdf.chapter_body(patient_info, plan_data)
-    return bytes(pdf.output())
-
-# ==========================================
-# 3. HELPER FUNCTIONS
-# ==========================================
 def calculate_predicted_pefr(age, height_cm, gender_prefix):
     if not height_cm or height_cm <= 0: return 0
     is_male = True
     prefix = str(gender_prefix).strip()
-    if any(x in prefix for x in ['นาง', 'น.ส.', 'หญิง', 'ด.ญ.', 'Miss', 'Mrs.']): is_male = False
+    if any(x in prefix for x in ['นาง', 'น.ส.', 'หญิง', 'ด.ญ.', 'Miss', 'Mrs.']):
+        is_male = False
+    
     if age < 15:
-        return max(-425.5714 + (5.2428 * height_cm), 100)
+        predicted = -425.5714 + (5.2428 * height_cm)
+        return max(predicted, 100)
     else:
-        h = height_cm; a = age
-        if is_male: pefr_ls = -16.859 + (0.307*a) + (0.141*h) - (0.0018*a**2) - (0.001*a*h)
-        else: pefr_ls = -31.355 + (0.162*a) - (0.00084*a**2) + (0.391*h) - (0.00099*h**2) - (0.00072*a*h)
+        h = height_cm
+        a = age
+        if is_male:
+            pefr_ls = -16.859 + (0.307*a) + (0.141*h) - (0.0018*a**2) - (0.001*a*h)
+        else:
+            pefr_ls = -31.355 + (0.162*a) - (0.00084*a**2) + (0.391*h) - (0.00099*h**2) - (0.00072*a*h)
         return pefr_ls * 60
 
 def get_percent_predicted(current_pefr, predicted_pefr):
     if predicted_pefr <= 0 or current_pefr <= 0: return 0
     return int((current_pefr / predicted_pefr) * 100)
+
+# ==========================================
+# 3. HELPER FUNCTIONS
+# ==========================================
 
 @st.cache_data(ttl=10)
 def load_data_fast(gid):
@@ -121,23 +64,35 @@ def load_data_fast(gid):
         if 'hn' in df.columns:
             df['hn'] = df['hn'].astype(str).str.split('.').str[0].str.strip().apply(lambda x: x.zfill(7))
         return df
-    except Exception as e: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"โหลดข้อมูลไม่สำเร็จ (Fast Mode): {e}")
+        st.stop()
 
 def connect_to_gsheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    
+    # ---------------------------------------------------------
+    # ☁️ CLOUD & LOCAL SUPPORT (Automatic Detection)
+    # ---------------------------------------------------------
     try:
+        # 1. ลองดึงจาก Streamlit Secrets (สำหรับบน Cloud)
         if "gcp_service_account" in st.secrets:
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+            creds_dict = st.secrets["gcp_service_account"]
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         else:
+            # 2. ถ้าไม่มี Secrets ให้ลองหาไฟล์ local (สำหรับในคอม)
             creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+            
         client = gspread.authorize(creds)
         return client.open_by_key(SHEET_ID)
-    except: return None
+        
+    except Exception as e:
+        st.error(f"❌ เชื่อมต่อ Google Sheets ไม่สำเร็จ: {e}")
+        st.stop()
 
 @st.cache_data(ttl=5) 
 def load_data_staff(worksheet_name):
     sh = connect_to_gsheet()
-    if not sh: return pd.DataFrame()
     try:
         worksheet = sh.worksheet(worksheet_name)
         data = worksheet.get_all_records()
@@ -145,19 +100,40 @@ def load_data_staff(worksheet_name):
         if 'hn' in df.columns:
             df['hn'] = df['hn'].astype(str).str.strip().apply(lambda x: x.zfill(7))
         return df
-    except: return pd.DataFrame()
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"ไม่พบแท็บ '{worksheet_name}'")
+        st.stop()
 
-def save_to_sheet(worksheet_name, row_data):
+def save_visit_data(data_dict):
     sh = connect_to_gsheet()
-    if sh:
-        try:
-            worksheet = sh.worksheet(worksheet_name)
-            worksheet.append_row(row_data)
-            load_data_staff.clear()
-            load_data_fast.clear()
-            return True
-        except: return False
-    return False
+    worksheet = sh.worksheet("visits")
+    row_to_append = [
+        data_dict["hn"], data_dict["date"], data_dict["pefr"],
+        data_dict["control_level"], data_dict["controller"], data_dict["reliever"],
+        data_dict["adherence"], data_dict["drp"], data_dict["advice"],
+        data_dict["technique_check"], data_dict["next_appt"], 
+        data_dict["note"]
+    ]
+    worksheet.append_row(row_to_append)
+    load_data_staff.clear()
+    load_data_fast.clear()
+
+def save_patient_data(data_dict):
+    sh = connect_to_gsheet()
+    worksheet = sh.worksheet("patients")
+    hn_val = f"'{data_dict['hn']}" 
+    row_to_append = [
+        hn_val,
+        data_dict["prefix"],
+        data_dict["first_name"],
+        data_dict["last_name"],
+        data_dict["dob"],
+        data_dict["best_pefr"],
+        data_dict["height"]
+    ]
+    worksheet.append_row(row_to_append)
+    load_data_staff.clear()
+    load_data_fast.clear()
 
 def mask_text(text):
     if not isinstance(text, str): return str(text)
@@ -173,6 +149,17 @@ def generate_qr(data):
     img.save(buf)
     return buf.getvalue()
 
+def get_action_plan_zone(current_pefr, reference_pefr):
+    if current_pefr <= 0: return "Not Done", "gray", "ไม่ได้เป่า Peak Flow"
+    if reference_pefr <= 0: return "Unknown", "gray", "ไม่มีข้อมูลอ้างอิง"
+    percent = (current_pefr / reference_pefr) * 100
+    if percent >= 80:
+        return "Green Zone", "green", "คุมได้ดี"
+    elif percent >= 50:
+        return "Yellow Zone", "orange", "เริ่มมีอาการ"
+    else:
+        return "Red Zone", "red", "อันตราย"
+
 def check_technique_status(pt_visits_df):
     if pt_visits_df.empty: return "never", 0, None
     reviews = pt_visits_df[pt_visits_df['technique_check'].astype(str).str.contains('ทำ', na=False)].copy()
@@ -180,20 +167,27 @@ def check_technique_status(pt_visits_df):
     reviews['date'] = pd.to_datetime(reviews['date'])
     last_date = reviews['date'].max()
     days_remaining = (last_date + timedelta(days=365) - pd.to_datetime("today").normalize()).days
-    if days_remaining < 0: return "overdue", abs(days_remaining), last_date
-    else: return "ok", days_remaining, last_date
+    if days_remaining < 0:
+        return "overdue", abs(days_remaining), last_date
+    else:
+        return "ok", days_remaining, last_date
 
 def plot_pefr_chart(visits_df, reference_pefr):
     data = visits_df.copy()
     data = data[data['pefr'] > 0]
-    if data.empty: return alt.Chart(pd.DataFrame({'date':[], 'pefr':[]})).mark_text(text="ไม่มีข้อมูลกราฟ PEFR")
+    
+    if data.empty:
+        return alt.Chart(pd.DataFrame({'date':[], 'pefr':[]})).mark_text(text="ไม่มีข้อมูลกราฟ PEFR")
+
     data['date'] = pd.to_datetime(data['date'])
     ref_val = reference_pefr if reference_pefr > 0 else data['pefr'].max()
+    
     def get_color(val):
         if val >= ref_val * 0.8: return 'green'
         elif val >= ref_val * 0.5: return 'orange'
         else: return 'red'
     data['color'] = data['pefr'].apply(get_color)
+
     base = alt.Chart(data).encode(
         x=alt.X('date', title='วันที่', axis=alt.Axis(format='%d/%m/%Y')),
         y=alt.Y('pefr', title='PEFR (L/min)', scale=alt.Scale(domain=[0, ref_val + 150])),
@@ -205,56 +199,6 @@ def plot_pefr_chart(visits_df, reference_pefr):
     rule_red = alt.Chart(pd.DataFrame({'y': [ref_val * 0.5]})).mark_rule(color='red', strokeDash=[5, 5]).encode(y='y')
     return (line + points + rule_green + rule_red).properties(height=350).interactive()
 
-def render_dashboard_charts(patients_df, visits_df):
-    if patients_df.empty:
-        st.warning("ยังไม่มีข้อมูลผู้ป่วย")
-        return None, None
-
-    # --- KPI 1: Status Control (Donut Chart) ---
-    if not visits_df.empty:
-        visits_df = visits_df.copy()
-        visits_df['date'] = pd.to_datetime(visits_df['date'])
-        
-        # เอา Visit ล่าสุดของแต่ละ HN
-        latest_visits = visits_df.sort_values('date').groupby('hn').tail(1)
-        
-        status_counts = latest_visits['control'].value_counts().reset_index()
-        status_counts.columns = ['status', 'count']
-        
-        # Color Map
-        color_scale = alt.Scale(domain=['Controlled', 'Partly Controlled', 'Uncontrolled'],
-                                range=['#28a745', '#ffc107', '#dc3545'])
-        
-        base = alt.Chart(status_counts).encode(theta=alt.Theta("count", stack=True))
-        pie = base.mark_arc(outerRadius=100, innerRadius=60).encode(
-            color=alt.Color("status", scale=color_scale, legend=alt.Legend(title="สถานะ")),
-            order=alt.Order("count", sort="descending"),
-            tooltip=["status", "count"]
-        )
-        text = base.mark_text(radius=120).encode(
-            text=alt.Text("count", format=",.0f"),
-            order=alt.Order("count", sort="descending"),
-            color=alt.value("black")  
-        )
-        chart_control = (pie + text).properties(title="สัดส่วนการคุมอาการ (Visit ล่าสุด)")
-    else:
-        chart_control = alt.Chart(pd.DataFrame({'x':[]})).mark_text(text="ไม่มีข้อมูล Visit")
-
-    # --- KPI 2: Age Distribution (Histogram) ---
-    patients_df = patients_df.copy()
-    patients_df['dob'] = pd.to_datetime(patients_df['dob'], errors='coerce')
-    now = pd.to_datetime('today')
-    patients_df['age'] = (now - patients_df['dob']).astype('<m8[Y]')
-    
-    chart_age = alt.Chart(patients_df).mark_bar().encode(
-        x=alt.X("age", bin=alt.Bin(maxbins=10), title="ช่วงอายุ (ปี)"),
-        y=alt.Y("count()", title="จำนวนผู้ป่วย"),
-        color=alt.value("#4c78a8"),
-        tooltip=["count()"]
-    ).properties(title="การกระจายตัวของอายุผู้ป่วย")
-
-    return chart_control, chart_age
-
 # ==========================================
 # 4. MAIN APP LOGIC
 # ==========================================
@@ -262,18 +206,20 @@ query_params = st.query_params
 target_hn = query_params.get("hn", None)
 
 if target_hn:
-    # ------------------------------------------------------------------
-    # PATIENT VIEW (Fast Mode, No Login)
-    # ------------------------------------------------------------------
+    # ------------------------------------------------
+    # 🟢 PATIENT VIEW (Fast Mode) - NO LOGIN REQUIRED
+    # ------------------------------------------------
+    
     patients_db_fast = load_data_fast(PATIENTS_GID)
     visits_db_fast = load_data_fast(VISITS_GID)
-    action_plans_fast = load_data_fast(ACTION_PLAN_GID)
+
     target_hn = str(target_hn).strip().zfill(7)
     patient = patients_db_fast[patients_db_fast['hn'] == target_hn]
     
     if not patient.empty:
         pt_data = patient.iloc[0]
         masked_name = f"{pt_data['prefix']}{mask_text(pt_data['first_name'])} {mask_text(pt_data['last_name'])}"
+        
         dob = pd.to_datetime(pt_data['dob'])
         age = (datetime.now() - dob).days // 365
         height = pt_data.get('height', 0)
@@ -288,223 +234,250 @@ if target_hn:
             st.caption("🔒 ข้อมูลผู้ป่วย (PDPA)")
         st.divider()
 
-        if not action_plans_fast.empty:
-             my_plan = action_plans_fast[action_plans_fast['hn'] == target_hn]
-             if not my_plan.empty:
-                latest_plan = my_plan.iloc[-1]
-                with st.expander("📄 แผนปฏิบัติการดูแลตนเอง", expanded=True):
-                    st.info(f"อัปเดต: {latest_plan['updated_at']} โดย {latest_plan['provider']}")
-                    st.success(f"**🟢 อาการปกติ:** {latest_plan['green_sym']}\n\n**💊 ยาประจำ:** {latest_plan['green_med']}")
-                    st.warning(f"**🟡 อาการเตือน:** {latest_plan['yellow_sym']}\n\n**⚠️ ปรับยา:** {latest_plan['yellow_med']}")
-                    st.error(f"**🔴 อาการรุนแรง:** {latest_plan['red_sym']}\n\n**🚑 ฉุกเฉิน:** {latest_plan['red_act']}")
-                    try:
-                        p_info = {'name': masked_name, 'hn': target_hn}
-                        p_data = latest_plan.to_dict()
-                        pdf_bytes = create_pdf(p_info, p_data)
-                        st.download_button("📥 ดาวน์โหลดแผนการรักษา (PDF)", data=pdf_bytes, file_name=f"ActionPlan_{target_hn}.pdf", mime="application/pdf")
-                    except Exception as e: st.error(f"❌ PDF Error: {e}")
-
         pt_visits = visits_db_fast[visits_db_fast['hn'] == target_hn].copy()
+        
         tech_status, tech_days, tech_last_date = check_technique_status(pt_visits)
-        st.write("")
         if tech_status == "overdue": st.error(f"⚠️ เตือน: ขาดทบทวนพ่นยา {tech_days} วัน")
         elif tech_status == "ok": st.success(f"✅ เทคนิคพ่นยา: ปกติ (เหลือ {tech_days} วัน)")
 
         if not pt_visits.empty:
             last_visit = pt_visits.iloc[-1]
+            zone_name, zone_color, advice = get_action_plan_zone(last_visit['pefr'], ref_pefr)
+            pct_std = get_percent_predicted(last_visit['pefr'], predicted_pefr)
+
+            st.info(f"📋 **สถานะล่าสุด ({last_visit['date']})**")
+            m1, m2, m3 = st.columns(3)
             pefr_show = last_visit['pefr'] if last_visit['pefr'] > 0 else "N/A"
-            st.info(f"📋 **สถานะล่าสุด ({last_visit['date']})** PEFR: {pefr_show}")
+            m1.metric("PEFR", f"{pefr_show}")
+            m2.metric("% มาตรฐาน", f"{pct_std}%", help=f"เทียบค่ามาตรฐาน: {int(predicted_pefr)}")
+            m3.markdown(f"โซน: :{zone_color}[**{zone_name}**]")
+            st.write(f"**💊 Controller:** {last_visit.get('controller', '-')}")
+            
+            if 'note' in last_visit and str(last_visit['note']).strip() != "" and str(last_visit['note']).lower() != "nan":
+                st.info(f"ℹ️ **หมายเหตุ:** {last_visit['note']}")
+
             st.subheader("📈 กราฟแนวโน้ม")
             chart = plot_pefr_chart(pt_visits, ref_pefr)
             st.altair_chart(chart, use_container_width=True)
-            with st.expander("ดูประวัติ"): st.dataframe(pt_visits.sort_values(by="date", ascending=False), hide_index=True)
-        else: st.warning("ไม่มีประวัติ")
-    else: st.error(f"ไม่พบข้อมูล HN: {target_hn}")
+            st.caption(f"เส้นประ (ค่าเป้าหมาย): {int(ref_pefr)}")
+            
+            with st.expander("ดูประวัติ"):
+                st.dataframe(pt_visits.sort_values(by="date", ascending=False), hide_index=True)
+        else:
+            st.warning("ไม่มีประวัติ")
+    else:
+        st.error(f"ไม่พบข้อมูล HN: {target_hn}")
 
 else:
-    # ------------------------------------------------------------------
-    # STAFF VIEW (Login Required)
-    # ------------------------------------------------------------------
+    # ------------------------------------------------
+    # 🔵 STAFF VIEW - 🔐 LOGIN REQUIRED
+    # ------------------------------------------------
     st.sidebar.header("🏥 Asthma Clinic")
-    if 'logged_in' not in st.session_state: st.session_state.logged_in = False
+
+    # --- Login System ---
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+
     if not st.session_state.logged_in:
-        st.title("🔐 เข้าสู่ระบบ")
-        password = st.text_input("รหัสผ่าน", type="password")
-        if st.button("Login"):
-            if password == ADMIN_PASSWORD:
-                st.session_state.logged_in = True
-                st.rerun()
-            else: st.error("❌ รหัสผ่านผิด")
+        st.title("🔐 เข้าสู่ระบบเจ้าหน้าที่")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            password = st.text_input("กรุณาใส่รหัสผ่าน", type="password")
+            if st.button("Login"):
+                if password == ADMIN_PASSWORD:
+                    st.session_state.logged_in = True
+                    st.rerun()
+                else:
+                    st.error("❌ รหัสผ่านไม่ถูกต้อง")
         st.stop()
 
-    if st.sidebar.button("🔓 Logout"):
+    # --- Staff Working Area ---
+    if st.sidebar.button("🔓 ออกจากระบบ"):
         st.session_state.logged_in = False
         st.rerun()
 
-    st.sidebar.info(f"สถานะ: เจ้าหน้าที่")
+    st.sidebar.info(f"สถานะ: เจ้าหน้าที่ (Logged In)")
+    
     patients_db = load_data_staff("patients")
     visits_db = load_data_staff("visits")
-    action_plans_db = load_data_staff("action_plans")
-    
-    # เมนูหลัก (เพิ่ม Dashboard)
-    mode = st.sidebar.radio("เมนูหลัก", ["📊 Dashboard ภาพรวม", "🔍 ค้นหา/บันทึกอาการ", "📄 Action Plan Generator", "➕ ลงทะเบียนผู้ป่วยใหม่"])
 
-    if mode == "📊 Dashboard ภาพรวม":
-        st.title("📊 Dashboard ภาพรวมคลินิก")
-        st.caption(f"ข้อมูล ณ วันที่ {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        
-        # --- Metrics Calculation ---
-        total_pts = len(patients_db)
-        
-        # Calculate monthly visits
-        this_month = datetime.now().strftime('%Y-%m')
-        if not visits_db.empty:
-            visits_db['date'] = pd.to_datetime(visits_db['date'], errors='coerce')
-            visits_clean = visits_db.dropna(subset=['date'])
-            this_month_visits = visits_clean[visits_clean['date'].dt.strftime('%Y-%m') == this_month].shape[0]
-            
-            # Find Uncontrolled
-            last_visits = visits_clean.sort_values('date').groupby('hn').tail(1)
-            uncontrolled_count = last_visits[last_visits['control'] == 'Uncontrolled'].shape[0]
-        else:
-            this_month_visits = 0
-            uncontrolled_count = 0
+    mode = st.sidebar.radio("เมนูหลัก", ["🔍 ค้นหา/บันทึกอาการ", "➕ ลงทะเบียนผู้ป่วยใหม่"])
 
-        # --- Display Metrics ---
-        k1, k2, k3 = st.columns(3)
-        k1.metric("ผู้ป่วยทั้งหมด", f"{total_pts} คน", border=True)
-        k2.metric("Visit เดือนนี้", f"{this_month_visits} ครั้ง", border=True)
-        k3.metric("กลุ่มเสี่ยง (Uncontrolled)", f"{uncontrolled_count} คน", delta_color="inverse", delta=f"⚠️ {uncontrolled_count}", border=True)
-
-        st.divider()
-
-        # --- Display Charts ---
-        c1, c2 = st.columns([1, 1])
-        chart_control, chart_age = render_dashboard_charts(patients_db, visits_db)
-        
-        with c1:
-            if chart_control:
-                st.altair_chart(chart_control, use_container_width=True)
-                st.info("💡 **สีเขียว (Controlled):** คุมอาการได้ดี\n\n💡 **สีเหลือง (Partly):** มีอาการบ้าง\n\n💡 **สีแดง (Uncontrolled):** อาการกำเริบ")
-        
-        with c2:
-            if chart_age:
-                st.altair_chart(chart_age, use_container_width=True)
-            
-            if not visits_db.empty:
-                # Trend Chart
-                visits_db['date'] = pd.to_datetime(visits_db['date'], errors='coerce')
-                visits_clean = visits_db.dropna(subset=['date'])
-                trend_data = visits_clean.set_index('date').resample('M').size().reset_index(name='count')
-                
-                chart_trend = alt.Chart(trend_data).mark_line(point=True).encode(
-                    x=alt.X('date', title='เดือน', axis=alt.Axis(format='%b %Y')),
-                    y=alt.Y('count', title='จำนวน Visit')
-                ).properties(title="แนวโน้มผู้รับบริการรายเดือน", height=200)
-                st.altair_chart(chart_trend, use_container_width=True)
-
-    elif mode == "📄 Action Plan Generator":
-        st.title("📄 สร้างแผนปฏิบัติการ")
-        hn_list = patients_db['hn'].unique().tolist(); hn_list.sort()
-        selected_hn_plan = st.selectbox("เลือกผู้ป่วย", hn_list)
-        if selected_hn_plan:
-            pt_info = patients_db[patients_db['hn'] == selected_hn_plan].iloc[0]
-            st.info(f"ผู้ป่วย: {pt_info['prefix']}{pt_info['first_name']} {pt_info['last_name']}")
-            existing_plan = pd.DataFrame()
-            if not action_plans_db.empty: existing_plan = action_plans_db[action_plans_db['hn'] == selected_hn_plan]
-            default_data = {}
-            if not existing_plan.empty: default_data = existing_plan.iloc[-1].to_dict(); st.caption(f"ข้อมูลล่าสุด: {default_data.get('updated_at')}")
-            
-            with st.form("action_plan"):
-                c1, c2 = st.columns(2)
-                p_prov = c1.text_input("แพทย์/เภสัชกร", value=default_data.get('provider', ''))
-                p_emer = c2.text_input("เบอร์ฉุกเฉิน", value=default_data.get('emergency_contact', '1669'))
-                st.markdown("### 🟢 Green Zone"); g1, g2 = st.columns(2)
-                p_gs = g1.text_area("อาการปกติ", value=default_data.get('green_sym', ''))
-                p_gm = g2.text_area("ยาประจำ", value=default_data.get('green_med', ''))
-                st.markdown("### 🟡 Yellow Zone"); y1, y2 = st.columns(2)
-                p_ys = y1.text_area("อาการเตือน", value=default_data.get('yellow_sym', ''))
-                p_ym = y2.text_area("การปรับยา", value=default_data.get('yellow_med', ''))
-                st.markdown("### 🔴 Red Zone"); r1, r2 = st.columns(2)
-                p_rs = r1.text_area("อาการรุนแรง", value=default_data.get('red_sym', ''))
-                p_ra = r2.text_area("การกู้ชีพ", value=default_data.get('red_act', ''))
-                
-                if st.form_submit_button("💾 บันทึก"):
-                    row = [selected_hn_plan, datetime.now().strftime("%Y-%m-%d %H:%M"), p_prov, p_emer, p_gs, p_gm, p_ys, p_ym, p_rs, p_ra]
-                    if save_to_sheet("action_plans", row):
-                        st.success("บันทึกสำเร็จ")
-                        try:
-                            p_dict = {'name': f"{pt_info['prefix']}{pt_info['first_name']} {pt_info['last_name']}", 'hn': selected_hn_plan}
-                            pl_dict = {'updated_at': datetime.now().strftime("%d/%m/%Y"), 'provider': p_prov, 'emergency_contact': p_emer, 'green_sym': p_gs, 'green_med': p_gm, 'yellow_sym': p_ys, 'yellow_med': p_ym, 'red_sym': p_rs, 'red_act': p_ra}
-                            pdf_bytes = create_pdf(p_dict, pl_dict)
-                            st.download_button("📥 PDF", data=pdf_bytes, file_name="ActionPlan.pdf", mime="application/pdf")
-                        except Exception as e: st.error(f"PDF Error: {e}")
-                    else: st.error("บันทึกไม่สำเร็จ")
-
-    elif mode == "➕ ลงทะเบียนผู้ป่วยใหม่":
+    if mode == "➕ ลงทะเบียนผู้ป่วยใหม่":
         st.title("➕ ลงทะเบียนผู้ป่วยรายใหม่")
-        with st.form("reg"):
-            c1, c2 = st.columns(2); r_hn = c1.text_input("HN"); r_p = c2.selectbox("คำนำหน้า", ["นาย", "นาง", "น.ส.", "ด.ช.", "ด.ญ."])
-            c3, c4 = st.columns(2); r_f = c3.text_input("ชื่อ"); r_l = c4.text_input("สกุล")
-            c5, c6 = st.columns(2); r_d = c5.date_input("วันเกิด", min_value=datetime(1920, 1, 1)); r_h = c6.number_input("สูง (cm)", 50, 250, 160)
-            r_b = st.number_input("Best PEFR", 0, 900, 0)
-            if st.form_submit_button("ลงทะเบียน"):
-                if r_hn and r_f:
-                    if str(r_hn).strip().zfill(7) in patients_db['hn'].values: st.error("HN ซ้ำ")
-                    else: 
-                        if save_to_sheet("patients", [f"'{str(r_hn).strip().zfill(7)}", r_p, r_f, r_l, str(r_d), r_b, r_h]): st.success("สำเร็จ")
-                        else: st.error("ไม่สำเร็จ")
-                else: st.error("ข้อมูลไม่ครบ")
+        st.info("ระบบจะจัดรูปแบบ HN เป็น 7 หลักให้อัตโนมัติ")
+
+        with st.form("register_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            reg_hn_input = col1.text_input("HN (เลขประจำตัวผู้ป่วย)")
+            reg_prefix = col2.selectbox("คำนำหน้า", ["นาย", "นาง", "น.ส.", "ด.ช.", "ด.ญ."])
+            col3, col4 = st.columns(2)
+            reg_fname = col3.text_input("ชื่อจริง")
+            reg_lname = col4.text_input("นามสกุล")
+            col5, col6 = st.columns(2)
+            reg_dob = col5.date_input("วันเกิด", min_value=datetime(1920, 1, 1))
+            reg_height = col6.number_input("ส่วนสูง (cm)", 50, 250, 160)
+            reg_best_pefr = st.number_input("Personal Best PEFR (ถ้ามี)", 0, 900, 0)
+            
+            submitted_reg = st.form_submit_button("✅ ลงทะเบียน")
+
+            if submitted_reg:
+                if not reg_hn_input or not reg_fname or not reg_lname:
+                    st.error("❌ กรุณากรอกข้อมูลให้ครบถ้วน")
+                    st.stop()
+                
+                formatted_hn = str(reg_hn_input).strip().zfill(7)
+                if formatted_hn in patients_db['hn'].values:
+                    st.error(f"❌ ลงทะเบียนไม่สำเร็จ: HN {formatted_hn} มีอยู่ในระบบแล้ว")
+                    st.stop()
+                
+                dup_name = patients_db[
+                    (patients_db['first_name'] == reg_fname) & 
+                    (patients_db['last_name'] == reg_lname)
+                ]
+                if not dup_name.empty:
+                    st.error(f"❌ ลงทะเบียนไม่สำเร็จ: ชื่อ {reg_fname} {reg_lname} มีอยู่ในระบบแล้ว")
+                    st.stop()
+                
+                new_pt_data = {
+                    "hn": formatted_hn,
+                    "prefix": reg_prefix,
+                    "first_name": reg_fname,
+                    "last_name": reg_lname,
+                    "dob": str(reg_dob),
+                    "best_pefr": reg_best_pefr,
+                    "height": reg_height
+                }
+                
+                try:
+                    with st.spinner("กำลังลงทะเบียน..."):
+                        save_patient_data(new_pt_data)
+                    st.success(f"🎉 ลงทะเบียน HN: {formatted_hn} เรียบร้อยแล้ว!")
+                    st.info("ไปที่เมนู 'ค้นหา' เพื่อเริ่มบันทึกการรักษาได้เลยครับ")
+                except Exception as e:
+                    st.error(f"เกิดข้อผิดพลาด: {e}")
 
     else:
-        # ------------------------------------------------------------------
-        # SEARCH / VISIT RECORD (Existing Logic)
-        # ------------------------------------------------------------------
-        hn_list = patients_db['hn'].unique().tolist(); hn_list.sort()
+        hn_list = patients_db['hn'].unique().tolist()
+        hn_list.sort()
         selected_hn = st.sidebar.selectbox("เลือกผู้ป่วย", hn_list)
+        
         if selected_hn:
             pt_data = patients_db[patients_db['hn'] == selected_hn].iloc[0]
             pt_visits = visits_db[visits_db['hn'] == selected_hn]
-            dob = pd.to_datetime(pt_data['dob']); age = (datetime.now() - dob).days // 365
-            predicted_pefr = calculate_predicted_pefr(age, pt_data.get('height', 0), pt_data['prefix'])
+            
+            dob = pd.to_datetime(pt_data['dob'])
+            age = (datetime.now() - dob).days // 365
+            height = pt_data.get('height', 0)
+            predicted_pefr = calculate_predicted_pefr(age, height, pt_data['prefix'])
+            
             st.title(f"{pt_data['prefix']}{pt_data['first_name']} {pt_data['last_name']}")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("HN", pt_data['hn']); c2.metric("อายุ", age); c3.metric("สูง", pt_data.get('height', 0)); c4.metric("Std PEFR", int(predicted_pefr))
-            
-            tech_status, tech_days, _ = check_technique_status(pt_visits)
-            if tech_status == "overdue": st.error(f"🚨 ขาดทบทวนพ่นยา {tech_days} วัน")
-            elif tech_status == "never": st.error("🚨 ยังไม่เคยสอนพ่นยา")
+            c1.metric("HN", pt_data['hn'])
+            c2.metric("อายุ", f"{age} ปี")
+            c3.metric("ส่วนสูง", f"{height} cm")
+            c4.metric("Standard PEFR", f"{int(predicted_pefr)}")
+
+            # Alert Tech
+            tech_status, tech_days, tech_last_date = check_technique_status(pt_visits)
+            if tech_status == "overdue": st.error(f"🚨 ขาดทบทวนพ่นยา {tech_days} วัน!")
+            elif tech_status == "never": st.error(f"🚨 ยังไม่เคยสอนพ่นยา!")
             else: st.success(f"✅ สอนพ่นยาแล้ว (เหลือ {tech_days} วัน)")
             
+            # Alert DRP
             if not pt_visits.empty:
-                last_drp = str(pt_visits.sort_values(by="date").iloc[-1]['drp']).strip()
-                if last_drp not in ["", "-", "nan"]: st.warning(f"💊 **DRP ล่าสุด:** {last_drp}")
+                pt_visits_sorted = pt_visits.sort_values(by="date")
+                last_visit_row = pt_visits_sorted.iloc[-1]
+                last_drp_text = str(last_visit_row['drp']).strip()
+                if last_drp_text != "" and last_drp_text != "-" and last_drp_text.lower() != "nan":
+                    d_date = pd.to_datetime(last_visit_row['date']).strftime('%d/%m/%Y')
+                    st.warning(f"💊 **DRP ล่าสุด ({d_date}):** {last_drp_text}")
 
-            st.divider(); st.subheader("📈 กราฟ"); chart = plot_pefr_chart(pt_visits, predicted_pefr); st.altair_chart(chart, use_container_width=True)
-            with st.expander("ประวัติ"): st.dataframe(pt_visits.sort_values(by="date", ascending=False), use_container_width=True)
-            
-            st.divider(); st.subheader("📝 บันทึก Visit")
-            with st.form("visit"):
-                c1, c2 = st.columns(2); v_d = c1.date_input("วันที่", value=datetime.today())
-                with c2: v_p = st.number_input("PEFR", 0, 900, step=10); v_no = st.checkbox("ไม่ได้เป่า")
-                if predicted_pefr > 0 and v_p > 0: st.caption(f"คิดเป็น {int((v_p/predicted_pefr)*100)}%")
-                v_ctrl = st.radio("Control", ["Controlled", "Partly Controlled", "Uncontrolled"], horizontal=True)
-                c3, c4 = st.columns(2); v_c = c3.multiselect("Controller", ["Seretide", "Budesonide", "Symbicort"]); v_r = c4.multiselect("Reliever", ["Salbutamol", "Berodual"])
-                c5, c6 = st.columns(2); v_a = c5.slider("ความร่วมมือ", 0, 100, 90); v_rel = c5.checkbox("ญาติรับแทน"); v_t = c6.checkbox("สอนเทคนิค")
-                v_drp = st.text_area("DRP"); v_adv = st.text_area("Advice"); v_nt = st.text_input("Note"); v_nx = st.date_input("นัดถัดไป")
+            st.divider()
+            st.subheader("📈 กราฟติดตามอาการ")
+            if not pt_visits.empty:
+                ref_val = predicted_pefr if predicted_pefr > 0 else pt_data['best_pefr']
+                chart = plot_pefr_chart(pt_visits, ref_val)
+                st.altair_chart(chart, use_container_width=True)
+
+            with st.expander("ประวัติการรักษา"):
+                st.dataframe(pt_visits.sort_values(by="date", ascending=False), use_container_width=True)
                 
-                if st.form_submit_button("บันทึก"):
-                    ap, aa, an = (0, 0, f"[ญาติรับแทน] {v_nt}") if v_rel else (v_p, v_a, v_nt)
-                    if v_no: ap = 0
-                    if save_to_sheet("visits", [selected_hn, str(v_d), ap, v_ctrl, ", ".join(v_c), ", ".join(v_r), aa, v_drp, v_adv, "ทำ" if v_t else "ไม่ทำ", str(v_nx), an]):
-                        st.success("สำเร็จ"); st.rerun()
-                    else: st.error("ไม่สำเร็จ")
+            st.divider()
+            st.subheader("📝 บันทึก Visit")
             
-            st.divider(); st.subheader("📇 Asthma Card")
-            try:
-                if st.secrets and "gcp_service_account" in st.secrets: base_url = "https://asthma-care.streamlit.app"
-                else: base_url = "http://localhost:8501"
-            except: base_url = "http://localhost:8501"
+            with st.form("new_visit", clear_on_submit=True):
+                col_a, col_b = st.columns(2)
+                v_date = col_a.date_input("วันที่", value=datetime.today())
+                
+                with col_b:
+                    v_pefr = st.number_input("PEFR (L/min)", 0, 900, step=10)
+                    v_no_pefr = st.checkbox("ไม่ได้เป่า Peak Flow (N/A)")
+                
+                if predicted_pefr > 0 and v_pefr > 0:
+                    pct = int((v_pefr / predicted_pefr) * 100)
+                    st.caption(f"💡 คิดเป็น **{pct}%** ของค่ามาตรฐาน ({int(predicted_pefr)}) (คำนวณเมื่อกดบันทึก)")
+
+                v_control = st.radio("Control", ["Controlled", "Partly Controlled", "Uncontrolled"], horizontal=True)
+                
+                c_med1, c_med2 = st.columns(2)
+                v_cont = c_med1.multiselect("Controller", ["Seretide", "Budesonide", "Symbicort"])
+                v_rel = c_med2.multiselect("Reliever", ["Salbutamol", "Berodual"])
+                
+                c_adh, c_chk = st.columns(2)
+                with c_adh:
+                    v_adh = st.slider("ความร่วมมือ (%)", 0, 100, 90)
+                    v_relative_pickup = st.checkbox("ญาติรับยาแทน / ประเมินไม่ได้", help="หากเลือก ความร่วมมือจะเป็น 0 และจะระบุในหมายเหตุ")
+                with c_chk:
+                    st.write("") 
+                    st.write("")
+                    v_tech = st.checkbox("✅ สอนเทคนิควันนี้")
+                
+                v_drp = st.text_area("DRP (ปัญหาการใช้ยา)")
+                v_adv = st.text_area("Advice (คำแนะนำ)")
+                v_note = st.text_input("หมายเหตุ (Note)")
+                v_next = st.date_input("นัดถัดไป")
+                
+                submitted = st.form_submit_button("💾 บันทึกข้อมูล")
+
+                if submitted:
+                    actual_pefr = 0 if v_no_pefr else v_pefr
+                    
+                    if v_relative_pickup:
+                        actual_adherence = 0
+                        prefix = "[ญาติรับแทน] "
+                        final_note = prefix + v_note if v_note else prefix.strip()
+                    else:
+                        actual_adherence = v_adh
+                        final_note = v_note
+
+                    new_data = {
+                        "hn": selected_hn, "date": str(v_date), "pefr": actual_pefr,
+                        "control_level": v_control, "controller": ", ".join(v_cont),
+                        "reliever": ", ".join(v_rel), 
+                        "adherence": actual_adherence,
+                        "drp": v_drp, 
+                        "advice": v_adv,
+                        "technique_check": "ทำ" if v_tech else "ไม่ทำ",
+                        "next_appt": str(v_next),
+                        "note": final_note
+                    }
+                    try:
+                        save_visit_data(new_data)
+                        st.success("บันทึกสำเร็จ")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
             
-            link = f"{base_url}/?hn={selected_hn}"; c_q, c_t = st.columns([1,2]); c_q.image(generate_qr(link), width=150)
-            c_t.markdown(f"**{pt_data['first_name']} {pt_data['last_name']}**\n\n**HN:** {selected_hn}\n\nPredicted PEFR: {int(predicted_pefr)}"); c_t.code(link)
+            st.divider()
+            st.subheader("📇 Asthma Card")
+            base_url = "https://asthma-care.streamlit.app"
+            link = f"{base_url}/?hn={selected_hn}"
+            c_q, c_t = st.columns([1,2])
+            c_q.image(generate_qr(link), width=150)
+            c_t.markdown(f"**{pt_data['first_name']} {pt_data['last_name']}**")
+            c_t.markdown(f"**HN:** {selected_hn}")
+            c_t.markdown(f"Predicted PEFR: {int(predicted_pefr)}")
+
+            c_t.code(link)
+
