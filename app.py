@@ -197,7 +197,64 @@ def plot_pefr_chart(visits_df, reference_pefr):
     points = base.mark_circle(size=100).encode(color=alt.Color('color', scale=None))
     rule_green = alt.Chart(pd.DataFrame({'y': [ref_val * 0.8]})).mark_rule(color='green', strokeDash=[5, 5]).encode(y='y')
     rule_red = alt.Chart(pd.DataFrame({'y': [ref_val * 0.5]})).mark_rule(color='red', strokeDash=[5, 5]).encode(y='y')
-    return (line + points + rule_green + rule_red).properties(height=350).interactive()
+    return (line + points + rule_green + rule_red).properties(height=350).interactive()'
+
+# ... (ต่อจาก function plot_pefr_chart เดิม)
+
+def render_dashboard_charts(patients_df, visits_df):
+    if patients_df.empty:
+        st.warning("ยังไม่มีข้อมูลผู้ป่วย")
+        return
+
+    # --- KPI 1: เตรียมข้อมูลสถานะการควบคุมล่าสุดของแต่ละคน ---
+    if not visits_df.empty:
+        # เรียงวันที่ แล้วเอา Visit ล่าสุดของแต่ละ HN
+        latest_visits = visits_df.sort_values('date').groupby('hn').tail(1)
+        
+        # นับจำนวนแยกตาม Status
+        status_counts = latest_visits['control'].value_counts().reset_index()
+        status_counts.columns = ['status', 'count']
+        
+        # กำหนดสีให้ตรงกับความหมายทางการแพทย์
+        # Controlled = เขียว, Partly = เหลือง, Uncontrolled = แดง
+        color_scale = alt.Scale(domain=['Controlled', 'Partly Controlled', 'Uncontrolled'],
+                                range=['#28a745', '#ffc107', '#dc3545']) # Green, Yellow, Red
+        
+        # สร้าง Donut Chart
+        base = alt.Chart(status_counts).encode(
+            theta=alt.Theta("count", stack=True)
+        )
+        
+        pie = base.mark_arc(outerRadius=120, innerRadius=80).encode(
+            color=alt.Color("status", scale=color_scale, legend=alt.Legend(title="สถานะการควบคุม")),
+            order=alt.Order("count", sort="descending"),
+            tooltip=["status", "count"]
+        )
+        
+        text = base.mark_text(radius=140).encode(
+            text=alt.Text("count", format=",.0f"),
+            order=alt.Order("count", sort="descending"),
+            color=alt.value("black")  
+        )
+        
+        chart_control = (pie + text).properties(title="สัดส่วนระดับการควบคุมโรค (Visit ล่าสุด)")
+    else:
+        chart_control = alt.Chart(pd.DataFrame({'x':[]})).mark_text(text="ไม่มีข้อมูล Visit")
+
+    # --- KPI 2: เตรียมข้อมูล Demographics (ช่วงอายุ) ---
+    patients_df['dob'] = pd.to_datetime(patients_df['dob'])
+    now = pd.to_datetime('today')
+    patients_df['age'] = (now - patients_df['dob']).astype('<m8[Y]')
+    
+    # สร้าง Histogram อายุ
+    chart_age = alt.Chart(patients_df).mark_bar().encode(
+        x=alt.X("age", bin=alt.Bin(maxbins=10), title="ช่วงอายุ (ปี)"),
+        y=alt.Y("count()", title="จำนวนผู้ป่วย"),
+        color=alt.value("#4c78a8"),
+        tooltip=["count()"]
+    ).properties(title="การกระจายตัวของอายุผู้ป่วย")
+
+    return chart_control, chart_age
 
 # ==========================================
 # 4. MAIN APP LOGIC
@@ -301,7 +358,56 @@ else:
     patients_db = load_data_staff("patients")
     visits_db = load_data_staff("visits")
 
-    mode = st.sidebar.radio("เมนูหลัก", ["🔍 ค้นหา/บันทึกอาการ", "➕ ลงทะเบียนผู้ป่วยใหม่"])
+    mode = st.sidebar.radio("เมนูหลัก", ["📊 Dashboard ภาพรวม", "🔍 ค้นหา/บันทึกอาการ", "📄 Action Plan Generator", "➕ ลงทะเบียนผู้ป่วยใหม่"])
+
+    if mode == "📊 Dashboard ภาพรวม":
+        st.title("📊 Dashboard ภาพรวมคลินิก")
+        st.caption(f"ข้อมูล ณ วันที่ {datetime.now().strftime('%d/%m/%Y')}")
+
+        # --- ส่วนที่ 1: KPI Cards ---
+        total_pts = len(patients_db)
+        
+        # หาจำนวน Visit เดือนนี้
+        this_month = datetime.now().strftime('%Y-%m')
+        if not visits_db.empty:
+            visits_db['date'] = pd.to_datetime(visits_db['date'])
+            this_month_visits = visits_db[visits_db['date'].dt.strftime('%Y-%m') == this_month].shape[0]
+            
+            # หาคนไข้ Uncontrolled ล่าสุด
+            last_visits = visits_db.sort_values('date').groupby('hn').tail(1)
+            uncontrolled_count = last_visits[last_visits['control'] == 'Uncontrolled'].shape[0]
+        else:
+            this_month_visits = 0
+            uncontrolled_count = 0
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("ผู้ป่วยทั้งหมด", f"{total_pts} คน", border=True)
+        k2.metric("Visit เดือนนี้", f"{this_month_visits} ครั้ง", border=True)
+        k3.metric("กลุ่มเสี่ยง (Uncontrolled)", f"{uncontrolled_count} คน", delta_color="inverse", delta=f"{uncontrolled_count}", border=True)
+
+        st.divider()
+
+        # --- ส่วนที่ 2: Charts ---
+        c1, c2 = st.columns([1, 1])
+        
+        chart_control, chart_age = render_dashboard_charts(patients_db, visits_db)
+        
+        with c1:
+            st.altair_chart(chart_control, use_container_width=True)
+            st.info("💡 **สีเขียว (Controlled):** คุมอาการได้ดี\n\n💡 **สีเหลือง (Partly):** มีอาการบ้าง\n\n💡 **สีแดง (Uncontrolled):** อาการกำเริบ/คุมไม่ได้")
+        
+        with c2:
+            st.altair_chart(chart_age, use_container_width=True)
+            if not visits_db.empty:
+                # แถม: กราฟเส้นแนวโน้ม Visit 
+                trend_data = visits_db.set_index('date').resample('M').size().reset_index(name='count')
+                chart_trend = alt.Chart(trend_data).mark_line(point=True).encode(
+                    x=alt.X('date', title='เดือน', axis=alt.Axis(format='%b %Y')),
+                    y=alt.Y('count', title='จำนวน Visit')
+                ).properties(title="แนวโน้มผู้รับบริการรายเดือน", height=200)
+                st.altair_chart(chart_trend, use_container_width=True)
+
+    elif mode == "📄 Action Plan Generator":
 
     if mode == "➕ ลงทะเบียนผู้ป่วยใหม่":
         st.title("➕ ลงทะเบียนผู้ป่วยรายใหม่")
@@ -471,12 +577,11 @@ else:
             
             st.divider()
             st.subheader("📇 Asthma Card")
-            base_url = "https://asthma-care.streamlit.app"
+            base_url = "http://localhost:8501"
             link = f"{base_url}/?hn={selected_hn}"
             c_q, c_t = st.columns([1,2])
             c_q.image(generate_qr(link), width=150)
             c_t.markdown(f"**{pt_data['first_name']} {pt_data['last_name']}**")
             c_t.markdown(f"**HN:** {selected_hn}")
             c_t.markdown(f"Predicted PEFR: {int(predicted_pefr)}")
-
             c_t.code(link)
