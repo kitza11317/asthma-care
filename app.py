@@ -25,7 +25,7 @@ SHEET_NAME = "asthma_db"
 PATIENTS_GID = "0"              
 VISITS_GID = "1491996218"       
 
-# Password (ควรย้ายไป st.secrets ในอนาคต)
+# Password
 ADMIN_PASSWORD = "1234"
 
 # ==========================================
@@ -146,13 +146,11 @@ def render_dashboard_charts(patients_df, visits_df):
         visits_df = visits_df.copy()
         visits_df['date'] = pd.to_datetime(visits_df['date'])
         
-        # เอา Visit ล่าสุดของแต่ละ HN
         latest_visits = visits_df.sort_values('date').groupby('hn').tail(1)
         
-        # [แก้ไข] เปลี่ยนไปใช้ control_level ตามที่คุณแจ้ง
+        # ใช้ control_level (หรือ control ถ้าหาไม่เจอ)
         target_col = 'control_level'
         if target_col not in latest_visits.columns:
-            # Fallback เผื่อหาไม่เจอ ลองหา control ธรรมดา
             if 'control' in latest_visits.columns: target_col = 'control'
             else: 
                 st.error(f"ไม่พบคอลัมน์ {target_col} ใน Google Sheet")
@@ -161,7 +159,6 @@ def render_dashboard_charts(patients_df, visits_df):
         status_counts = latest_visits[target_col].value_counts().reset_index()
         status_counts.columns = ['status', 'count']
         
-        # Color Map
         color_scale = alt.Scale(domain=['Controlled', 'Partly Controlled', 'Uncontrolled'],
                                 range=['#28a745', '#ffc107', '#dc3545'])
         
@@ -181,10 +178,13 @@ def render_dashboard_charts(patients_df, visits_df):
         chart_control = alt.Chart(pd.DataFrame({'x':[]})).mark_text(text="ไม่มีข้อมูล Visit")
 
     # --- KPI 2: Age Distribution (Histogram) ---
+    # [แก้ไข] เปลี่ยนวิธีคำนวณอายุตรงนี้ครับ
     patients_df = patients_df.copy()
     patients_df['dob'] = pd.to_datetime(patients_df['dob'], errors='coerce')
     now = pd.to_datetime('today')
-    patients_df['age'] = (now - patients_df['dob']).astype('<m8[Y]')
+    
+    # ใช้วิธีหาร 365 วันแทน astype เพื่อแก้ ValueError
+    patients_df['age'] = (now - patients_df['dob']).dt.days // 365
     
     chart_age = alt.Chart(patients_df).mark_bar().encode(
         x=alt.X("age", bin=alt.Bin(maxbins=10), title="ช่วงอายุ (ปี)"),
@@ -203,7 +203,7 @@ target_hn = query_params.get("hn", None)
 
 if target_hn:
     # ------------------------------------------------------------------
-    # PATIENT VIEW (Fast Mode, No Login)
+    # PATIENT VIEW (Fast Mode)
     # ------------------------------------------------------------------
     patients_db_fast = load_data_fast(PATIENTS_GID)
     visits_db_fast = load_data_fast(VISITS_GID)
@@ -274,7 +274,6 @@ else:
         st.title("📊 Dashboard ภาพรวมคลินิก")
         st.caption(f"ข้อมูล ณ วันที่ {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         
-        # --- Metrics Calculation ---
         total_pts = len(patients_db)
         
         this_month = datetime.now().strftime('%Y-%m')
@@ -283,10 +282,8 @@ else:
             visits_clean = visits_db.dropna(subset=['date'])
             this_month_visits = visits_clean[visits_clean['date'].dt.strftime('%Y-%m') == this_month].shape[0]
             
-            # Find Uncontrolled
             last_visits = visits_clean.sort_values('date').groupby('hn').tail(1)
             
-            # [แก้ไข] เปลี่ยนไปใช้ control_level
             target_col = 'control_level'
             if target_col not in last_visits.columns: 
                  if 'control' in last_visits.columns: target_col = 'control'
@@ -299,7 +296,6 @@ else:
             this_month_visits = 0
             uncontrolled_count = 0
 
-        # --- Display Metrics ---
         k1, k2, k3 = st.columns(3)
         k1.metric("ผู้ป่วยทั้งหมด", f"{total_pts} คน", border=True)
         k2.metric("Visit เดือนนี้", f"{this_month_visits} ครั้ง", border=True)
@@ -307,7 +303,6 @@ else:
 
         st.divider()
 
-        # --- Display Charts ---
         c1, c2 = st.columns([1, 1])
         chart_control, chart_age = render_dashboard_charts(patients_db, visits_db)
         
@@ -321,7 +316,6 @@ else:
                 st.altair_chart(chart_age, use_container_width=True)
             
             if not visits_db.empty:
-                # Trend Chart
                 visits_db['date'] = pd.to_datetime(visits_db['date'], errors='coerce')
                 visits_clean = visits_db.dropna(subset=['date'])
                 trend_data = visits_clean.set_index('date').resample('M').size().reset_index(name='count')
