@@ -117,7 +117,8 @@ def save_visit_data(data_dict):
         data_dict["control_level"], data_dict["controller"], data_dict["reliever"],
         data_dict["adherence"], data_dict["drp"], data_dict["advice"],
         data_dict["technique_check"], data_dict["next_appt"], 
-        data_dict["note"]
+        data_dict["note"],
+        data_dict["is_new_case"]  
     ]
     worksheet.append_row(row_to_append)
     load_data_staff.clear()
@@ -204,6 +205,104 @@ def plot_pefr_chart(visits_df, reference_pefr):
     rule_red = alt.Chart(pd.DataFrame({'y': [ref_val * 0.5]})).mark_rule(color='red', strokeDash=[5, 5]).encode(y='y')
     return (line + points + rule_green + rule_red).properties(height=350).interactive()
 
+def render_dashboard(visits_df):
+    if visits_df.empty:
+        st.warning("ยังไม่มีข้อมูลการตรวจเยี่ยม")
+        return
+
+    # เตรียมข้อมูล
+    df = visits_df.copy()
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df['month_year'] = df['date'].dt.strftime('%Y-%m') # จัดกลุ่มรายเดือน
+    
+    # ----------------------------------
+    # KPI 1: สัดส่วนการคุมอาการ (Control Level) - นับเฉพาะ Visit ล่าสุดของแต่ละคน
+    # ----------------------------------
+    st.subheader("1. ภาพรวมการควบคุมโรค (Latest Status)")
+    latest_visits = df.sort_values('date').groupby('hn').tail(1)
+    
+    control_counts = latest_visits['control_level'].value_counts().reset_index()
+    control_counts.columns = ['status', 'count']
+    
+    # กำหนดสี: Controlled=เขียว, Partly=เหลือง, Uncontrolled=แดง
+    domain = ['Controlled', 'Partly Controlled', 'Uncontrolled']
+    range_ = ['#66BB6A', '#FFCA28', '#EF5350'] # Green, Amber, Red
+
+    pie = alt.Chart(control_counts).mark_arc(innerRadius=50).encode(
+        theta=alt.Theta(field="count", type="quantitative"),
+        color=alt.Color(field="status", type="nominal", scale=alt.Scale(domain=domain, range=range_), legend=alt.Legend(title="สถานะ")),
+        tooltip=['status', 'count']
+    ).properties(title="สัดส่วนผู้ป่วยแยกตามระดับการควบคุม")
+    
+    text = pie.mark_text(radius=140).encode(
+        text=alt.Text("count", format=".0f"),
+        order=alt.Order("status"),
+        color=alt.value("black")  
+    )
+    
+    st.altair_chart(pie + text, use_container_width=True)
+
+    # ----------------------------------
+    # KPI 2: สถิติผู้รับบริการรายเดือน (Total Visits & New Cases)
+    # ----------------------------------
+    st.subheader("2. ปริมาณงานรายเดือน (Workload)")
+    
+    # นับจำนวน Visit ทั้งหมดต่อเดือน
+    monthly_visits = df.groupby('month_year').size().reset_index(name='total_visits')
+    
+    # นับจำนวน New Cases ต่อเดือน (เช็คว่า column is_new_case เป็น TRUE หรือไม่)
+    if 'is_new_case' in df.columns:
+        new_cases = df[df['is_new_case'].astype(str).str.upper() == 'TRUE']
+        monthly_new = new_cases.groupby('month_year').size().reset_index(name='new_cases')
+    else:
+        monthly_new = pd.DataFrame(columns=['month_year', 'new_cases'])
+
+    # รวมตาราง
+    trend_df = pd.merge(monthly_visits, monthly_new, on='month_year', how='left').fillna(0)
+    
+    # แปลงข้อมูลเป็น Long Format เพื่อพล็อตกราฟซ้อน
+    trend_long = trend_df.melt('month_year', var_name='type', value_name='count')
+    
+    line_chart = alt.Chart(trend_long).mark_line(point=True).encode(
+        x=alt.X('month_year', title='เดือน-ปี'),
+        y=alt.Y('count', title='จำนวน (ครั้ง/คน)'),
+        color=alt.Color('type', legend=alt.Legend(title="ประเภท"), scale=alt.Scale(domain=['total_visits', 'new_cases'], range=['#42A5F5', '#AB47BC'])),
+        tooltip=['month_year', 'type', 'count']
+    ).properties(height=300)
+    
+    st.altair_chart(line_chart, use_container_width=True)
+
+    # ----------------------------------
+    # KPI 3: ตาราง 10 อันดับยา Controller ที่ใช้บ่อย
+    # ----------------------------------
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("3. การใช้ยา Controller")
+        # แยกรายการยาที่คั่นด้วย comma ออกมานับ
+        meds = df['controller'].astype(str).str.split(', ').explode()
+        med_counts = meds.value_counts().reset_index()
+        med_counts.columns = ['medicine', 'usage_count']
+        med_counts = med_counts[med_counts['medicine'] != 'nan'] # ตัดค่าว่าง
+        
+        bar_med = alt.Chart(med_counts.head(10)).mark_bar().encode(
+            x=alt.X('usage_count', title='จำนวนครั้งที่จ่าย'),
+            y=alt.Y('medicine', sort='-x', title='ชื่อยา'),
+            color=alt.value('#26A69A'),
+            tooltip=['medicine', 'usage_count']
+        )
+        st.altair_chart(bar_med, use_container_width=True)
+    
+    # ----------------------------------
+    # KPI 4: Action List (คนไข้ที่ต้องดูแลพิเศษ)
+    # ----------------------------------
+    with c2:
+        st.subheader("🚨 กลุ่มเสี่ยง (Uncontrolled)")
+        high_risk = latest_visits[latest_visits['control_level'] == 'Uncontrolled'][['hn', 'date', 'pefr', 'note']]
+        if not high_risk.empty:
+            st.dataframe(high_risk, hide_index=True, use_container_width=True)
+        else:
+            st.success("ไม่มีผู้ป่วย Uncontrolled ในขณะนี้")
+
 # ==========================================
 # 4. MAIN APP LOGIC
 # ==========================================
@@ -289,7 +388,10 @@ else:
         with col1:
             password = st.text_input("กรุณาใส่รหัสผ่าน", type="password")
             if st.button("Login"):
-                if password == ADMIN_PASSWORD:
+                # ดึงรหัสผ่านจาก Secrets (ถ้ามี) หรือใช้ค่า Default
+                valid_password = st.secrets.get("admin_password", "1234")
+                
+                if password == valid_password:
                     st.session_state.logged_in = True
                     st.rerun()
                 else:
@@ -301,14 +403,27 @@ else:
         st.session_state.logged_in = False
         st.rerun()
 
-    st.sidebar.info(f"สถานะ: เจ้าหน้าที่ (Logged In)")
+    st.sidebar.success(f"สถานะ: เจ้าหน้าที่ (Logged In)")
     
+    # โหลดข้อมูล (Caching)
     patients_db = load_data_staff("patients")
     visits_db = load_data_staff("visits")
 
-    mode = st.sidebar.radio("เมนูหลัก", ["🔍 ค้นหา/บันทึกอาการ", "➕ ลงทะเบียนผู้ป่วยใหม่"])
+    # เมนูหลัก (เพิ่ม Dashboard)
+    mode = st.sidebar.radio("เมนูหลัก", ["🔍 ค้นหา/บันทึกอาการ", "➕ ลงทะเบียนผู้ป่วยใหม่", "📊 Dashboard ภาพรวม"])
 
-    if mode == "➕ ลงทะเบียนผู้ป่วยใหม่":
+    # ==========================================
+    # 📊 MODE 1: DASHBOARD
+    # ==========================================
+    if mode == "📊 Dashboard ภาพรวม":
+        st.title("📊 Dashboard สรุปสถานะคลินิก")
+        st.info("ข้อมูลวิเคราะห์จากฐานข้อมูล Visits ทั้งหมด")
+        render_dashboard(visits_db)
+
+    # ==========================================
+    # ➕ MODE 2: REGISTER NEW PATIENT
+    # ==========================================
+    elif mode == "➕ ลงทะเบียนผู้ป่วยใหม่":
         st.title("➕ ลงทะเบียนผู้ป่วยรายใหม่")
         st.info("ระบบจะจัดรูปแบบ HN เป็น 7 หลักให้อัตโนมัติ")
 
@@ -362,6 +477,9 @@ else:
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาด: {e}")
 
+    # ==========================================
+    # 🔍 MODE 3: SEARCH & VISIT RECORD
+    # ==========================================
     else:
         hn_list = patients_db['hn'].unique().tolist()
         hn_list.sort()
@@ -414,6 +532,7 @@ else:
             with st.form("new_visit", clear_on_submit=True):
                 col_a, col_b = st.columns(2)
                 v_date = col_a.date_input("วันที่", value=datetime.today())
+                v_is_new = col_a.checkbox("🆕 เป็นผู้ป่วยรายใหม่ (New Case)") # <--- Checkbox ใหม่
                 
                 with col_b:
                     v_pefr = st.number_input("PEFR (L/min)", 0, 900, step=10)
@@ -465,7 +584,8 @@ else:
                         "advice": v_adv,
                         "technique_check": "ทำ" if v_tech else "ไม่ทำ",
                         "next_appt": str(v_next),
-                        "note": final_note
+                        "note": final_note,
+                        "is_new_case": "TRUE" if v_is_new else "FALSE" # <--- บันทึกค่า New Case
                     }
                     try:
                         save_visit_data(new_data)
@@ -476,6 +596,7 @@ else:
             
             st.divider()
             st.subheader("📇 Asthma Card")
+            
             # ---------------------------------------------------------
             # 🌐 URL CONFIGURATION
             # ---------------------------------------------------------
@@ -504,4 +625,3 @@ else:
             
             # แสดง URL ด้านล่างเพื่อตรวจสอบความถูกต้อง
             st.caption(f"Direct Link: {link}")
-
