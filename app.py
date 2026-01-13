@@ -582,7 +582,7 @@ else:
                         "adherence": actual_adherence,
                         "drp": v_drp, 
                         "advice": v_adv,
-                        "technique_check": "ทำ" if v_tech else "ไม่ทำ",
+                        "technique_check": "ทำ" if v_tech else "ไม่",
                         "next_appt": str(v_next),
                         "note": final_note,
                         "is_new_case": "TRUE" if v_is_new else "FALSE" # <--- บันทึกค่า New Case
